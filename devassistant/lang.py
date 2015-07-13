@@ -26,14 +26,6 @@ class Command(object):
     - kwargs: global context taken at point of execution of this command
     """
 
-    command_runners = None
-
-    @classmethod
-    def load_command_runners(cls):
-        if not cls.command_runners:
-            cls.command_runners = utils.import_module('devassistant.command_runners')
-        return cls.command_runners
-
     def __init__(self, comm_type, comm, kwargs={}):
         if '.' in comm_type:
             self.prefix, self.comm_type = comm_type.rsplit('.', 1)
@@ -49,20 +41,6 @@ class Command(object):
         self.files_dir = kwargs.get('__files_dir__', [''])[-1]
         self.files = kwargs.get('__files__', [''])[-1]
         self.kwargs = kwargs
-
-    def run(self):
-        for crs_prefix, crs in type(self).load_command_runners().command_runners.items():
-            if self.prefix == crs_prefix:
-                # traverse in reversed order, so that dynamically loaded user command runners
-                #  can outrun (=> override) the builtin ones
-                for cr in reversed(crs):
-                    if cr.matches(self):
-                        return cr(self).run()
-
-        prefix_with_colon = self.prefix + '.' if self.prefix else self.prefix
-        raise exceptions.CommandException(
-            'No runner for command "{p}{ct}: {c}".'.
-            format(p=prefix_with_colon, ct=self.comm_type, c=self.input_res))
 
     @property
     def input_log_res(self):
