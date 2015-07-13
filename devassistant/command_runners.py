@@ -1,6 +1,6 @@
 import copy
+import collections
 import getpass
-import grp
 import json
 import logging
 import os
@@ -8,6 +8,7 @@ import re
 import time
 import string
 import subprocess
+import sys
 import threading
 import unicodedata
 
@@ -36,29 +37,42 @@ from devassistant import yaml_snippet_loader
 Lists should be traversed in reversed order, so that dynamically loaded command
 runners can outrun (and hence "override") the default ones.
 """
-command_runners = {}
 
+class CommandRunners(six.moves.UserDict):
+    '''This class holds a dict of CommandRunners assorted by their prefixes in this format:
 
-def register_command_runner(arg):
-    """Decorator that registers a command runner. Accepts either:
+    {
+        prefix1: [CommandRunner1, CommandRunner2...],
+        prefix2: [CommandRunner3...]
+        ...
+    }
+    '''
 
-    - CommandRunner directly or
-    - String prefix to register a command runner under (returning a decorator)
-    """
-    if isinstance(arg, str):
-        def inner(command_runner):
-            command_runners.setdefault(arg, [])
-            command_runners[arg].append(command_runner)
-            return command_runner
-        return inner
-    elif issubclass(arg, CommandRunner):
-        command_runners.setdefault('', [])
-        command_runners[''].append(arg)
-        return arg
-    else:
-        msg = 'register_command_runner expects str or CommandRunner as argument, got: {0}'.\
-            format(arg)
-        raise ValueError(msg)
+    def __init__(self, *args, **kwargs):
+        '''Instantiate the class and load built-in CommandRunners'''
+        six.moves.UserDict.__init__(self, *args, **kwargs) # UserDict is an old style class
+        self._load_builtins()
+
+    def _load_builtins(self):
+        '''Load all CommandRunner subclasses in this module'''
+        for name, cl in vars(sys.modules[__name__]).items():
+            try:
+                self.register(cl)
+            except TypeError: # Non-class object encountered
+                pass
+
+    def register(self, runner, prefix=''):
+        '''Register a CommandRunner subclass (optionally under a given prefix).
+        If the prefix is not specified, it defaults to ''.
+
+        This command registers the class only within this instance of
+        CommandRunners, not globally as it used to be in the past.'''
+        if issubclass(runner, CommandRunner) and runner is not CommandRunner:
+            self.data.setdefault(prefix, [])
+            self.data[prefix].append(runner)
+        else:
+            msg = 'Runner must be a CommandRunner subclass, not "{t}"'.format(t=type(runner))
+            raise TypeError(msg)
 
 
 class CommandRunner(object):
@@ -101,7 +115,6 @@ class CommandRunner(object):
         raise NotImplementedError()
 
 
-@register_command_runner
 class AtExitCommandRunner(CommandRunner):
 
     @classmethod
@@ -114,7 +127,6 @@ class AtExitCommandRunner(CommandRunner):
         return (True, self.c.comm)
 
 
-@register_command_runner
 class AskCommandRunner(CommandRunner):
 
     @classmethod
@@ -138,7 +150,6 @@ class AskCommandRunner(CommandRunner):
         return (bool(res), res)
 
 
-@register_command_runner
 class UseCommandRunner(CommandRunner):
 
     @classmethod
@@ -282,7 +293,6 @@ class UseCommandRunner(CommandRunner):
         return getattr(assistant, '_' + section_name)
 
 
-@register_command_runner
 class ClCommandRunner(CommandRunner):
 
     @classmethod
@@ -316,7 +326,6 @@ class ClCommandRunner(CommandRunner):
         return (True, result)
 
 
-@register_command_runner
 class DependenciesCommandRunner(CommandRunner):
 
     @classmethod
@@ -335,7 +344,6 @@ class DependenciesCommandRunner(CommandRunner):
         return (True, self.c.input_res)
 
 
-@register_command_runner
 class DotDevassistantCommandRunner(CommandRunner):
 
     @classmethod
@@ -472,7 +480,6 @@ class DotDevassistantCommandRunner(CommandRunner):
         cls.__dot_devassistant_write_struct(path, content)
 
 
-@register_command_runner
 class GitHubCommandRunner(CommandRunner):
     _required_yaml_args = {'default': ['login', 'reponame'],
                            'create_repo': ['login', 'reponame', 'private'],
@@ -729,7 +736,6 @@ class GitHubCommandRunner(CommandRunner):
         return (success, msg)
 
 
-@register_command_runner
 class LogCommandRunner(CommandRunner):
 
     @classmethod
@@ -750,7 +756,6 @@ class LogCommandRunner(CommandRunner):
         return (True, self.c.input_res)
 
 
-@register_command_runner
 class SCLCommandRunner(CommandRunner):
 
     @classmethod
@@ -796,7 +801,6 @@ class SCLCommandRunner(CommandRunner):
         return retval
 
 
-@register_command_runner
 class Jinja2Runner(CommandRunner):
     @classmethod
     def matches(cls, c):
@@ -945,7 +949,6 @@ class Jinja2Runner(CommandRunner):
         return path[len(prefix):].strip(os.path.sep)
 
 
-@register_command_runner
 class AsUserCommandRunner(CommandRunner):
 
     @classmethod
@@ -977,7 +980,6 @@ class AsUserCommandRunner(CommandRunner):
         return (ret, out)
 
 
-@register_command_runner
 class DockerCommandRunner(CommandRunner):
 
     def __init__(self, c):
@@ -1261,7 +1263,6 @@ class DockerCommandRunner(CommandRunner):
         return (logres, res)
 
 
-@register_command_runner
 class VagrantDockerCommandRunner(CommandRunner):
 
     @classmethod
@@ -1311,7 +1312,6 @@ class VagrantDockerCommandRunner(CommandRunner):
         return containers
 
 
-@register_command_runner
 class NormalizeCommandRunner(CommandRunner):
 
     @classmethod
@@ -1357,7 +1357,6 @@ class NormalizeCommandRunner(CommandRunner):
         return (True, normalized)
 
 
-@register_command_runner
 class SetupProjectDirCommandRunner(CommandRunner):
     @classmethod
     def matches(cls, c):
@@ -1437,7 +1436,6 @@ class SetupProjectDirCommandRunner(CommandRunner):
         return (True, topdir_fullpath if args['create_topdir'] else contdir)
 
 
-@register_command_runner
 class PingPongCommandRunner(CommandRunner):
     @classmethod
     def matches(cls, c):
@@ -1521,7 +1519,6 @@ class PingPongCommandRunner(CommandRunner):
         return (lres, res)
 
 
-@register_command_runner
 class LoadCmdCommandRunner(CommandRunner):
     @classmethod
     def matches(cls, c):
@@ -1580,17 +1577,15 @@ class LoadCmdCommandRunner(CommandRunner):
             msg = 'Failed to load commands from "{0}": {1}'.format(from_file, e)
             raise exceptions.CommandException(msg)
 
-        crs = []
+        crs = collections.defaultdict(list)
         for k, v in vars(mod).items():
-            if isinstance(v, type) and issubclass(v, CommandRunner) and v != CommandRunner:
+            if isinstance(v, type) and issubclass(v, CommandRunner) and v is not CommandRunner:
                 if not load_only or (k in load_only):
-                    register_command_runner(prefix)(v)
-                    crs.append(k)
+                    crs[prefix].append(v)
 
         return (len(crs) > 0, crs)
 
 
-@register_command_runner
 class EnvCommandRunner(CommandRunner):
     @classmethod
     def matches(cls, c):
